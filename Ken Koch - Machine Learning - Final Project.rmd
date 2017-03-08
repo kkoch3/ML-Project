@@ -1,0 +1,186 @@
+---
+title: "Machine Learning - Final Project"
+output:
+  html_document:
+    keep_md: yes
+  pdf_document:
+    keep_tex: yes
+---
+Ken Koch
+
+#Executive Summary
+
+This project is an analysis of Human Activity Recognition exercises and the training of data models to predict the 'classe' outcome which indicates whether an individual corrrectly performed an exercise (value of 'A') or incorrectly performed it in one of four alternative ways (value of 'B', 'C', 'D', or 'E').
+
+Using Random Forest prediction with k-Fold Cross Validation (k=10), the classe variable can be predicted with an accuracy rate of 99% and an Out-of-Bag(OOB) sample error of 0.65%.
+
+#Background
+
+The data used for this project comes from the Human Activity Recognition project (http://groupware.les.inf.puc-rio.br/har). 
+
+The training data can be acquired here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The testing data can be acquired here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The following packages were used in the compiling of this data:
+```{r results='hide', warning=FALSE, message=FALSE, echo=TRUE}
+
+library(datasets)
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(caret)
+library(rlist)
+
+set.seed(23456)
+
+#Load the training and testing data (ensure that the working directory is set to the file locations)
+training <- read.csv("pml-training.csv", na.strings=c('#DIV/0!', '', 'NA'))
+testing <- read.csv("pml-testing.csv", na.strings=c('#DIV/0!', '', 'NA')) 
+```
+
+#Analysis of the Data
+
+An initial analysis of the Human Activity Recognition training data shows that there are two types of records (rows): detailed data records and summary data records. The summary data records contain summary information for a group of detail records. This summary information includes kurtosis, skewness, max, min, avg, variance, standard deviation, amplitude, and totals. In order to predict the classe variable, we will use the detail records to build a prediction model. We can then use the summary records to create another model that we can use to validate our testing predictions.
+
+As shown below, the training data was cleaned to remove empty columns and summary columns. The summary data was then identified and the detailed training data was separated from the summary training data. 
+```{r results='hide', warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE}
+
+#Let's find any columns in training for which there isn't any data
+emptyColumns <- apply(training, 2, function(x){all(is.na(x))})
+trainingDetail <- training[,-which(emptyColumns==TRUE)]
+
+#There is a typo in the name of column 17, let's fix it (max_picth_belt)
+names(trainingDetail)[17] <- "max_pitch_belt"
+
+#max_pitch_belt is one of the columns that only applies to summary records, 
+#so we'll use it to tag those records
+isSummary <- apply(trainingDetail, 1, function(x){!is.na(x[17])}) 
+
+#Let's pull the summary records out of the trainingDetail set
+trainingSummary <- trainingDetail[which(isSummary==TRUE),]
+trainingDetail <- trainingDetail[-which(isSummary==TRUE),]
+
+#All of the summary columns in the detail records are empty and don't add 
+#any value. Let's get rid of them.
+emptyColumns <- apply(trainingDetail, 2, function(x){all(is.na(x))})
+
+#Remove the empty factor columns from the detail data
+trainingDetail <- trainingDetail[-which(emptyColumns==TRUE)]
+
+#Let's take a look at the testing data to see if it is detail or summary data. 
+#If it is detail data, it will have NAs in the summary columns
+NAs <- apply(testing, 1, function(x){anyNA(x)})
+```
+
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE}
+
+#Check the number of rows in the testing dataset that are detail records
+length(NAs[NAs==TRUE])
+  
+#Validate it against the total rows in the testing dataset
+nrow(testing)
+```
+
+Given that the total rows and the number of detail rows in the testing data set are equal, the detailed training data is initially targeted for creating the prediction model.
+
+To further clean the data, the first 7 columns of the detailed training data were removed (see below) because they contained user and date/time information that did not appear to have any relevance to outcome of the 'classe' variable. As shown in the plot below, it appears that the exercises were performed by the users in a specific sequence. Since these exercises were deliberately performed in a specific sequence for the purpose of training a model, the date/time information would not be relevant for determining whether or not a future, random person was performing an exercise correctly.
+
+Next, a correlation table was created on the detailed records to determine which variables were highly correlated (>75%). Using that data, an ommission list of variables was computed and those variables were removed from the detailed training data.
+
+```{r results='markup', warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE}
+
+#Let's throw away the first 7 columns of information; they contain user and
+#date/time information that we will assume (for now) do not have an impact on 
+#the result of the "classe" variable. This leaves us with 53 columns, including #the 'classe' variable.
+trainingDetail <- trainingDetail[,8:60]
+  
+#Let's compute a correlation table for everything but the 'classe' variable so 
+#we can see which columns are highly correlated
+corTable <- cor(trainingDetail[1:52])
+  
+#Let's create an ommission list of columns that we won't need because they are
+#highly correlated with other columns and, thus, are redundant.
+omitList <- apply(corTable, 1, function(x){which((abs(x) > 0.75 & x != 1.000000000)==TRUE)})
+omitList <- unlist(omitList) #Flatten the list of lists into a single list
+omitList <- list.sort(unique(as.integer(omitList))) 
+omitList <- omitList[-1]  #Get rid of the 1st element since we want to keep it
+  
+#trainingSummary <- trainingSummary[, -omitList]
+trainingDetail <- trainingDetail[, -omitList]
+```
+
+#Cross Validation and Building the Classification Models
+
+Cross validation was then configured using the K-Fold method with 10 folds.
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE}
+
+#Set up K-Fold Cross-Validation (10 folds) for use in our model training
+trainCtl <- trainControl(method = "cv", 10) 
+```
+
+Next, a Random Forest classification model was created for the detailed training data. The outputs from the random forest and the final model are shown below. 
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE}
+
+modelFitDetailRf <- train(classe ~ ., method = "rf", data = trainingDetail, trControl = trainCtl)
+```
+
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=FALSE, cache=TRUE}
+
+modelFitDetailRf
+modelFitDetailRf$finalModel
+```
+The model created from the detailed training records yields strong results with an accuracy of 99.29% and an OOB error rate of 0.65%.
+
+While the results are strong, adding the summary records back into the model could improve the results since these records also include detail information from the last observation in each set of records.
+```{r results='markup', warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE}
+
+#We have to have the same columns from the summary data that are in the detail data
+trainingCombined <- rbind(trainingDetail, trainingSummary[,names(trainingSummary) %in% names(trainingDetail)])
+
+modelFitCombinedRf <- train(classe ~ ., method = "rf", data = trainingCombined, na.action = na.exclude, trControl = trainCtl)
+```
+
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=FALSE, cache=TRUE}
+
+modelFitCombinedRf
+modelFitCombinedRf$finalModel
+```
+As shown above, the model results from the recombination of the detailed training data with the relevant variables from the summary training data yield a better result with accuracy remaining at 99.29% and an OOB error rate of 0.63%
+
+The plot below shows a small decline in the accuracy of the model (0.8%) as the number of predictors in the model increases with the low end of the accuracy range at 98.4% for 20 predictors.
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE}
+
+plot(modelFitCombinedRf)
+```
+
+Plotting the error rate for each outcome against the number of trees in the model (see below) shows that the model reaches a stable point at just over 100 trees, indicating that the model scale was adequate to achieve the result.
+
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE, render=FALSE}
+
+library(data.table)
+plotData <- as.data.table(modelFitCombinedRf$finalModel$err.rate)
+plotData$trees <- plotData[,.I]
+plotData = melt(plotData, id.vars = "trees")
+names(plotData)[2] <- "Outcome"
+names(plotData)[3] <- "Error"
+ggplot(as.data.frame(plotData), aes(x=trees, y=Error, color=Outcome)) + geom_line() + scale_y_log10() + ggtitle("Error Rate by Predicted Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+  
+Plotting the margin shows that the classifiers for the 'classe' variable are correct and there was sufficent data available in the training set to achieve a near perfect classification. 
+  
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=TRUE, cache=TRUE}
+plot(margin(modelFitCombinedRf$finalModel,trainingCombined$classe))
+```
+
+#Conclusion
+
+Using the final model, we can confidently predict the 'classe' outcomes of the 20 records in the testing data set with an accuracy of 99%. The predicted results are shown below.
+```{r results='markup', tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=120), warning=FALSE, message=FALSE, echo=TRUE}
+
+predict(modelFitCombinedRf, testing)
+```
+
+</br></br>
+<p align="center">**- End of Report -**</p>
+</br>
